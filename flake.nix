@@ -1,5 +1,5 @@
 {
-  description = "Kiro with custom browser launcher";
+  description = "Kiro and Chromium wrappers for OAuth flow";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/3de8f8d73e35724bf9abef41f1bdbedda1e14a31";
@@ -19,56 +19,108 @@
       };
     in
     {
-      packages.${system}.default = pkgs.stdenv.mkDerivation {
-        pname = "kiro-wrapped";
-        version = pkgs-kiro.kiro.version or "unknown";
+      packages.${system} = {
+        
+        # Package 1: Chromium wrapper with custom xdg-open
+        chromium-wrapped = pkgs.stdenv.mkDerivation {
+          pname = "chromium-wrapped";
+          version = pkgs.chromium.version;
 
-        dontUnpack = true;
-        dontBuild = true;
-        dontConfigure = true;
+          dontUnpack = true;
+          dontBuild = true;
 
-        nativeBuildInputs = with pkgs; [
-          makeWrapper
-        ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
 
-        buildInputs = [
-          pkgs-kiro.kiro    # kiro from pinned commit
-          pkgs.chromium     # chromium from unstable
-        ];
+          installPhase = ''
+            mkdir -p $out/bin
 
-        installPhase = ''
-          runHook preInstall
+            # Create custom xdg-open for chromium
+            cat > $out/bin/xdg-open <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 
-          mkdir -p $out/bin
+if [[ "$1" == kiro://* ]]; then
+  echo "[chromium xdg-open] Opening Kiro link: $1" >&2
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+  exec ${pkgs-kiro.kiro}/bin/kiro --verbose --disable-gpu --no-sandbox --open-url "$1"
+fi
+EOF
+            chmod +x $out/bin/xdg-open
 
-          # Create custom xdg-open wrapper that launches Chromium
-          cat > $out/bin/xdg-open <<'XDGEOF'
-#!/bin/sh
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
-exec ${pkgs.chromium}/bin/chromium --new-window --no-sandbox "$@"
-XDGEOF
-          chmod +x $out/bin/xdg-open
+            # Wrap Chromium
+            makeWrapper ${pkgs.chromium}/bin/chromium $out/bin/chromium \
+              --prefix PATH : "$out/bin" \
+              --set BROWSER "$out/bin/xdg-open" \
+              --unset XDG_CURRENT_DESKTOP \
+              --unset DESKTOP_SESSION \
+              --unset GIO_LAUNCHED_DESKTOP_FILE_PID \
+              --add-flags "--new-window --no-sandbox --verbose"
+          '';
 
-          # Create kiro wrapper
-          makeWrapper ${pkgs-kiro.kiro}/bin/kiro $out/bin/kiro \
-            --prefix PATH : "$out/bin" \
-            --set BROWSER "$out/bin/xdg-open" \
-            --add-flags "--no-sandbox"
-
-          runHook postInstall
-        '';
-
-        meta = with pkgs.lib; {
-          description = "Kiro with custom browser support";
-          license = licenses.unfree;
-          platforms = [ "x86_64-linux" ];
-          mainProgram = "kiro";
+          meta = {
+            description = "Chromium with custom xdg-open for Kiro links";
+            mainProgram = "chromium";
+          };
         };
+
+        # Package 2: Kiro wrapper with custom xdg-open
+        kiro-wrapped = pkgs.stdenv.mkDerivation {
+          pname = "kiro-wrapped";
+          version = pkgs-kiro.kiro.version or "unknown";
+
+          dontUnpack = true;
+          dontBuild = true;
+
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+
+          installPhase = ''
+            mkdir -p $out/bin
+
+            # Create custom xdg-open for kiro
+            cat > $out/bin/xdg-open <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+
+echo "[kiro xdg-open] Opening browser: $1" >&2
+exec ${self.packages.${system}.chromium-wrapped}/bin/chromium "$@"
+EOF
+            chmod +x $out/bin/xdg-open
+
+            # Wrap Kiro
+            makeWrapper ${pkgs-kiro.kiro}/bin/kiro $out/bin/kiro \
+              --prefix PATH : "$out/bin" \
+              --set BROWSER "$out/bin/xdg-open" \
+              --unset XDG_CURRENT_DESKTOP \
+              --unset DESKTOP_SESSION \
+              --unset GIO_LAUNCHED_DESKTOP_FILE_PID \
+              --add-flags "--verbose"
+          '';
+
+          meta = {
+            description = "Kiro with custom browser launcher";
+            mainProgram = "kiro";
+          };
+        };
+
+        # Default package
+        default = self.packages.${system}.kiro-wrapped;
       };
 
-      apps.${system}.default = {
-        type = "app";
-        program = "${self.packages.${system}.default}/bin/kiro";
+      # Apps
+      apps.${system} = {
+        kiro = {
+          type = "app";
+          program = "${self.packages.${system}.kiro-wrapped}/bin/kiro";
+        };
+        
+        chromium = {
+          type = "app";
+          program = "${self.packages.${system}.chromium-wrapped}/bin/chromium";
+        };
+        
+        default = self.apps.${system}.kiro;
       };
     };
 }
